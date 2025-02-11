@@ -1,0 +1,68 @@
+name: Common Workflows
+
+on:
+  workflow_dispatch:
+  pull_request:
+  schedule:
+    - cron: "0 16 * * *"  # Runs every day at 2:00 AM AEST (16:00 UTC)
+
+jobs:
+  branch-determination:
+    name: Determine Branch
+    runs-on: ubuntu-latest
+    outputs:
+      branch: ${{ steps.set-branch-non-schedule.outputs.branch || steps.set-branch-schedule.outputs.branch }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Determine branch for scheduled events
+        if: ${{ github.event_name == 'schedule' }}
+        id: set-branch-schedule
+        run: |
+          echo "Fetching origin branches..."
+          git fetch origin
+
+          echo "Checking if master branch exists..."
+          if git show-ref --quiet refs/remotes/origin/master; then
+            echo "Master branch exists."
+            echo "branch=master" >> $GITHUB_OUTPUT
+
+          echo "Checking if main branch exists..."
+          elif git show-ref --quiet refs/remotes/origin/main; then
+            echo "Main branch exists."
+            echo "branch=main" >> $GITHUB_OUTPUT
+
+          else
+            echo "Neither master nor main exists. Exiting."
+            exit 1
+          fi
+
+      - name: Set branch for non-scheduled events
+        if: ${{ github.event_name != 'schedule' }}
+        id: set-branch-non-schedule
+        run: echo "branch=${{ github.head_ref || github.ref_name }}" >> $GITHUB_OUTPUT
+
+  dev-hub-catalog-generation:
+    name: Run Catalog Generation
+    needs: branch-determination 
+    uses: aurizon-kaiseki/gha-common-workflows/.github/workflows/catalog-generation.yml@main
+    with:
+      ref: ${{ needs.branch-determination.outputs.branch }}
+    secrets: inherit
+
+  standards-check:
+    name: Run Standards Check
+    needs: dev-hub-catalog-generation
+    if: ${{ github.event_name != 'schedule' }}
+    uses: aurizon-kaiseki/gha-common-workflows/.github/workflows/standards-check.yml@main
+    secrets: inherit
+
+  leanix-publish:
+    name: Run LeanIX Publish
+    needs: dev-hub-catalog-generation
+    if: ${{ github.event_name != 'schedule' && (needs.branch-determination.outputs.branch == 'main' || needs.branch-determination.outputs.branch == 'master') }}
+    uses: aurizon-kaiseki/gha-common-workflows/.github/workflows/leanix-publish.yml@main
+    secrets: inherit
+    with:
+      ref: ${{ needs.branch-determination.outputs.branch }}
